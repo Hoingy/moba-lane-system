@@ -1,0 +1,6 @@
+name: Lanes
+version: '1.0'
+
+main: org.bordenj.lanes.Lanes
+api-version: '26.3'
+
