@@ -39,24 +39,27 @@ public class Events implements Listener {
 
     Set<LivingEntity> towers = new HashSet<>();
     Set<LivingEntity> banners = new HashSet<>();
-
+    Set<LivingEntity> guardians = new HashSet<>();
     Map<UUID, String> playerSides = new HashMap<>();
-    Map<UUID, Integer> aggressorUntil = new HashMap<>();   // player -> tick the flag expires
+    Map<UUID, Integer> aggressorUntil = new HashMap<>();
     Map<Mob, Player> forcedTargets = new HashMap<>();      // minions told to chase an aggressor
-
     List<TextDisplay> towerDisplays = new ArrayList<>();
 
-    enum MinionTypes {MELEE,RANGED,BANNER,TOWER}
+    enum MinionTypes {MELEE,RANGED,BANNER,TOWER,GUARDIAN}
     Map<Mob, MinionTypes> types = new HashMap<>();
 
-    Location blue = new Location(Bukkit.getWorld("world"),-59.5,-60,-12.5);
-    Location red = new Location(Bukkit.getWorld("world"),60.5,-60,-12.5);
+    Location blue = new Location(Bukkit.getWorld("world"),-77.5,-60,-12.5);
+    Location red = new Location(Bukkit.getWorld("world"),78.5,-60,-12.5);
 
     Location blueTowerBeam = new Location(Bukkit.getWorld("world"),-22.5,-56,-10.5);
     Location redTowerBeam = new Location(Bukkit.getWorld("world"),25,-53.5,-12.5);
 
     Location blueTowerBase = new Location(Bukkit.getWorld("world"),-25,-60,-12.5);
     Location redTowerBase = new Location(Bukkit.getWorld("world"),26,-60,-12.5);
+
+    Location blueGuardianBase = new Location(Bukkit.getWorld("world"),-68.5,-60,-12.5);
+    Location redGuardianBase = new Location(Bukkit.getWorld("world"),69.5,-60,-12.5);
+
 
     private static final double PlayerTargetPenalty = 150.0;
     private static final double AggressorBonus = 300.0;
@@ -65,6 +68,7 @@ public class Events implements Listener {
     private static final double TowerRange = 10.0;
     private static final double TowerHealth = 200.0;
     private static final double TowerTargetPenalty = 100.0;
+    private static final double GuardianTargetPenalty = 100.0;
 
     private static final double BannerTargetBonus = 50.0;
 
@@ -78,12 +82,12 @@ public class Events implements Listener {
 
     private static final double CrowdScore = 5;
 
-    private static final double MeleeAggroRange = 10.0;
+    private static final double MeleeAggroRange = 5.0;
     private static final double MeleeAttackRange = 2.0;
     private static final double MeleeMaxLeash = 6.0;
     private static final int MeleeCooldown = 40; //ticks
 
-    private static final double RangedAggroRange = 14.0;
+    private static final double RangedAggroRange = 5.0;
     private static final double RangedAttackRange = 7.0;
     private static final double RangedMaxLeash = 6.0;
     private static final int RangedCooldown = 50; //ticks
@@ -100,7 +104,7 @@ public class Events implements Listener {
     private static final double MissileDamage = 2;
     private static final double MeleeDamage = 4.0;
 
-
+    private static final double GuardianHealth = 300.0;
 
     private final Lanes plugin;
     public Events(Lanes plugin){
@@ -137,7 +141,7 @@ public class Events implements Listener {
 
         for(Map.Entry<LivingEntity, String> en : creeps.entrySet()){
             if(!en.getValue().equals(victimSide)) continue;
-            if(!(en.getKey() instanceof Mob mob) || towers.contains(mob) || !mob.isValid()) continue;
+            if(!(en.getKey() instanceof Mob mob) || towers.contains(mob) || guardians.contains(mob) || !mob.isValid()) continue;
             if(mob.getWorld() != victim.getWorld()) continue;
             if(mob.getLocation().distanceSquared(victim.getLocation()) <= AggroCallRange * AggroCallRange){
                 forcedTargets.put(mob, attacker);
@@ -147,7 +151,13 @@ public class Events implements Listener {
 
     public void DEBUGtowers(){
         spawnTower("RED",redTowerBase,redTowerBeam);
+
         spawnTower("BLUE",blueTowerBase,blueTowerBeam);
+    }
+
+    public void DEBUGguardians(){
+        spawnRedGuardian();
+        spawnBlueGuardian();
     }
 
     public void cleanup(){
@@ -160,6 +170,7 @@ public class Events implements Listener {
         towers.clear();
         banners.clear();
         types.clear();
+        guardians.clear();
         playerSides.clear();
         aggressorUntil.clear();
         forcedTargets.clear();
@@ -351,7 +362,7 @@ public class Events implements Listener {
 
                 for(Map.Entry<LivingEntity,String>e : creeps.entrySet()){
                     LivingEntity candidate =  e.getKey();
-                    if(candidate!=banner && candidate.isValid()&&!towers.contains(candidate)){
+                    if(candidate!=banner && candidate.isValid() && !towers.contains(candidate) && !guardians.contains(candidate)){
                         double max = Objects.requireNonNull(candidate.getAttribute(Attribute.MAX_HEALTH)).getValue();
                         if(e.getValue().equals(side)&&candidate.getHealth()!=max){
                             if(candidate.getLocation().distanceSquared(banner.getLocation())<=BannerHealRange*BannerHealRange){
@@ -396,15 +407,15 @@ public class Events implements Listener {
         }.runTaskTimer(plugin,0,10);
     }
 
-    private Component healthBar(String side, double hp, double max){
+    private Component healthBar(String side, String name, double hp, double max){
         int total = 20;
-        int filled = (int) Math.ceil(hp / max * total);
+        int filled = (int) Math.ceil(Math.max(0, hp) / max * total);
         NamedTextColor color = side.equals("BLUE") ? NamedTextColor.AQUA : NamedTextColor.RED;
         NamedTextColor bar_color = side.equals("BLUE") ? NamedTextColor.DARK_BLUE : NamedTextColor.DARK_RED;
-        return Component.text(side + " Tower", color)
+        return Component.text(side + " " + name, color)
                 .append(Component.text("|".repeat(filled), bar_color))
                 .append(Component.text("|".repeat(total - filled), NamedTextColor.DARK_GRAY))
-                .append(Component.text(" " + (int) Math.ceil(hp) + "/" + (int) max, NamedTextColor.WHITE));
+                .append(Component.text(" " + (int) Math.ceil(Math.max(0, hp)) + "/" + (int) max, NamedTextColor.WHITE));
     }
 
     private Component minionHealthBar(String side, double hp, double max){
@@ -465,7 +476,7 @@ public class Events implements Listener {
                     continue;
                 }
                 double score = Math.sqrt(d)
-                        + attackerCounter(candidate, minion) * CrowdScore
+                        + (guardians.contains(candidate) ? GuardianTargetPenalty : attackerCounter(candidate, minion) * CrowdScore)
                         + (towers.contains(candidate) ? TowerTargetPenalty : 0)
                         - (banners.contains(candidate) ? BannerTargetBonus : 0);
 
@@ -802,7 +813,7 @@ public class Events implements Listener {
         TextDisplay label = base.getWorld().spawn(base.clone().add(0, 9.5, 0), TextDisplay.class, d -> {
             d.setPersistent(false);
             d.setBillboard(Display.Billboard.CENTER);
-            d.text(healthBar(side, TowerHealth, TowerHealth));
+            d.text(healthBar(side, "Tower", TowerHealth, TowerHealth));
             d.setTransformation(new Transformation(
                     new Vector3f(),
                     new AxisAngle4f(),
@@ -848,7 +859,7 @@ public class Events implements Listener {
                 int now = Bukkit.getCurrentTick();
 
                 if(now >= nextNameUpdate){
-                    label.text(healthBar(side, core.getHealth(), TowerHealth));
+                    label.text(healthBar(side, "Tower", core.getHealth(), TowerHealth));
                     nextNameUpdate = now + 10;
                 }
 
@@ -883,15 +894,70 @@ public class Events implements Listener {
             }
         }.runTaskTimer(plugin, 0, 1);
     }
+    private void spawnGuardian(String side, Location base, float yaw){
+        IronGolem core = base.getWorld().spawn(base, IronGolem.class, g -> {
+            g.setPersistent(false);
+            g.setAI(false);
+            g.setSilent(true);
+            g.setRemoveWhenFarAway(false);
+        });
+        core.setRotation(yaw, 0);
+        Objects.requireNonNull(core.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(GuardianHealth);
+        Objects.requireNonNull(core.getAttribute(Attribute.KNOCKBACK_RESISTANCE)).setBaseValue(1.0);
+        Objects.requireNonNull(core.getAttribute(Attribute.SCALE)).setBaseValue(3);
+        core.setHealth(GuardianHealth);
 
+        TextDisplay label = base.getWorld().spawn(base.clone().add(0, 12, 0), TextDisplay.class, d -> {
+            d.setPersistent(false);
+            d.setBillboard(Display.Billboard.CENTER);
+            d.text(healthBar(side, "Guardian", GuardianHealth, GuardianHealth));
+            d.setTransformation(new Transformation(
+                    new Vector3f(),
+                    new AxisAngle4f(),
+                    new Vector3f(2f, 2f, 2f),
+                    new AxisAngle4f()));
+        });
+        towerDisplays.add(label);
+        creeps.put(core, side);
+        guardians.add(core);
+        types.put(core, MinionTypes.GUARDIAN);
+
+        new BukkitRunnable() {
+            @Override
+            public void run() {
+                if(!core.isValid()){
+                    boolean killed = core.getHealth() <= 0;
+                    label.remove();
+                    towerDisplays.remove(label);
+                    creeps.remove(core);
+                    guardians.remove(core);
+                    types.remove(core);
+                    if(killed){
+                        core.getWorld().spawnParticle(Particle.EXPLOSION_EMITTER, core.getLocation(), 2, 0, 0, 0, 0);
+                        String winner = side.equals("BLUE") ? "RED" : "BLUE";
+                        Bukkit.broadcast(Component.text(side + " guardian destroyed - " + winner + " wins!"));
+                    }
+                    cancel();
+                    return;
+                }
+                label.text(healthBar(side, "Guardian", core.getHealth(), GuardianHealth));
+            }
+        }.runTaskTimer(plugin, 0, 10);
+    }
+    private void spawnRedGuardian(){
+        spawnGuardian("RED",redGuardianBase,90);
+    }
+    private void spawnBlueGuardian(){
+        spawnGuardian("BLUE",blueGuardianBase,-90);
+    }
 
     @EventHandler
     public void sneakEvent(PlayerToggleSneakEvent e){
         Player p = e.getPlayer();
         if(!p.isSneaking()){ //TESTING
 
-            //spawnWave("BLUE",blue,red);
-            //spawnWave("RED",red,blue);
+            spawnWave("BLUE",blue,red);
+            spawnWave("RED",red,blue);
 
         }
     }
