@@ -91,17 +91,17 @@ public class Events implements Listener {
     private static final double BeamMaxRadius = 0.20;
 
 
-    private static final double CrowdScore = 5;
+    private static final double CrowdScore = 7;
 
     private static final double MeleeAggroRange = 5.0;
     private static final double MeleeAttackRange = 2.0;
     private static final double MeleeMaxLeash = 6.0;
-    private static final int MeleeCooldown = 40; //ticks
+    private static final int MeleeCooldown = 25; //ticks
 
     private static final double RangedAggroRange = 5.0;
     private static final double RangedAttackRange = 7.0;
     private static final double RangedMaxLeash = 6.0;
-    private static final int RangedCooldown = 50; //ticks
+    private static final int RangedCooldown = 35; //ticks
 
     private static final double BannerHealRange = 14.0;
     private static final int BannerHealCooldown = 8*20; //ticks
@@ -112,12 +112,12 @@ public class Events implements Listener {
 
     private static final double BannerMissileSpeed = 1.5;
     private static final double MissileSpeed = 0.3;
-    private static final double MissileDamage = 2;
-    private static final double MeleeDamage = 4.0;
+    private static final double MissileDamage = 1.0;
+    private static final double MeleeDamage = 2.0;
 
     private static final double GuardianHealth = 300.0;
 
-    private static final double TetherRange = 10.0;
+    private static final double TetherRange = 6.0;
     private static final int PlayerIgnoreTicks = 5 * 20;
     private static final double ReturnArrive = 2.0;
 
@@ -127,8 +127,8 @@ public class Events implements Listener {
     }
 
     public void startMatch(){
-        DEBUGtowers();
-        DEBUGguardians();
+        SpawnTowers();
+        SpawnGuardians();
         waveTask = new BukkitRunnable() {
             @Override
             public void run() {
@@ -214,13 +214,13 @@ public class Events implements Listener {
         }
     }
 
-    public void DEBUGtowers(){
+    public void SpawnTowers(){
         spawnTower("RED",redTowerBase,redTowerBeam);
 
         spawnTower("BLUE",blueTowerBase,blueTowerBeam);
     }
 
-    public void DEBUGguardians(){
+    public void SpawnGuardians(){
         spawnRedGuardian();
         spawnBlueGuardian();
     }
@@ -238,6 +238,9 @@ public class Events implements Listener {
         guardians.clear();
         aggressorUntil.clear();
         forcedTargets.clear();
+        anchors.clear();
+        returning.clear();
+        playerIgnoreUntil.clear();
 
         towerDisplays.forEach(Entity::remove);
         towerDisplays.clear();
@@ -352,7 +355,7 @@ public class Events implements Listener {
                 }
 
                 pos.add(toTarget.normalize().multiply(MissileSpeed));
-                world.spawnParticle(Particle.ENCHANTED_HIT, pos, 4, 0.02, 0.02, 0.02, 0);
+                world.spawnParticle(Particle.ENCHANTED_HIT, pos, 4, 0.01, 0.01, 0.01, 0);
             }
         }.runTaskTimer(plugin, 0, 1);
     }
@@ -462,6 +465,10 @@ public class Events implements Listener {
                     banners.remove(mob);
                     types.remove(mob);
                     forcedTargets.remove(mob);
+
+                    anchors.remove(mob);
+                    returning.remove(mob);
+                    playerIgnoreUntil.remove(mob);
                     this.cancel();
 
                     this.cancel();
@@ -632,16 +639,19 @@ public class Events implements Listener {
         public boolean shouldStayActive(){
             return target!=null && target.isValid()
                     && target.getLocation().distanceSquared(minion.getLocation())<=MeleeMaxLeash*MeleeMaxLeash
-                    && !(target instanceof Player p && forcedTargets.get(minion) == p && !isAggressor(p));
+                    && !(target instanceof Player p && forcedTargets.get(minion) == p && !isAggressor(p))
+                    && !tetherBroken(minion);
         }
 
         @Override
         public void start(){
+            aggroStart(minion);
             targets.put(minion,target);
         }
 
         @Override
         public void stop(){
+            aggroStop(minion);
             minion.getPathfinder().stopPathfinding();
             targets.remove(minion);
             target=null;
@@ -713,16 +723,19 @@ public class Events implements Listener {
         public boolean shouldStayActive(){
             return target!=null && target.isValid()
                     && target.getLocation().distanceSquared(minion.getLocation())<=RangedMaxLeash*RangedMaxLeash
-                    && !(target instanceof Player p && forcedTargets.get(minion) == p && !isAggressor(p));
+                    && !(target instanceof Player p && forcedTargets.get(minion) == p && !isAggressor(p))
+                    && !tetherBroken(minion);
         }
 
         @Override
         public void start(){
+            aggroStart(minion);
             targets.put(minion,target);
         }
 
         @Override
         public void stop(){
+            aggroStop(minion);
             minion.getPathfinder().stopPathfinding();
             targets.remove(minion);
             target=null;
@@ -789,8 +802,21 @@ public class Events implements Listener {
 
         @Override
         public void tick(){
+            Location back = returning.get(minion);
+            if(back != null){
+                if(back.getWorld() == minion.getWorld()
+                        && back.distanceSquared(minion.getLocation()) <= ReturnArrive * ReturnArrive){
+                    returning.remove(minion);//become normal again
+                } else {
+                    if(!minion.getPathfinder().hasPath() || minion.getTicksLived() % 20 == 0){
+                        minion.getPathfinder().moveTo(back, 1.6);//return to lane fast
+                    }
+                    return;
+                }
+            }
+
             if(!minion.getPathfinder().hasPath() || minion.getTicksLived() % 40 == 0){
-                minion.getPathfinder().moveTo(goal, 1.1);
+                minion.getPathfinder().moveTo(goal, 1.3);
             }
         }
 
@@ -832,15 +858,15 @@ public class Events implements Listener {
 
         banners.add(golem);
 
-        Objects.requireNonNull(golem.getAttribute(Attribute.SCALE)).setBaseValue(0.4);
+        Objects.requireNonNull(golem.getAttribute(Attribute.SCALE)).setBaseValue(0.5);
         Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(30);
         golem.setHealth(30);
         golem.setCollidable(true);
 
         types.put(golem,MinionTypes.BANNER);
 
-        minionManager(golem,side,goal,new RangedAttackGoal(golem));
-        doBannerHeal(golem,side);
+        minionManager(golem,side,goal,new MeleeAttackGoal(golem));
+        //doBannerHeal(golem,side);
     }
     private void spawnWave(String side, Location start, Location goal){
         Location offset = new Location(start.getWorld(), 0, 0, 1 * LaneSpacing);
@@ -1025,10 +1051,8 @@ public class Events implements Listener {
     @EventHandler
     public void sneakEvent(PlayerToggleSneakEvent e){
         Player p = e.getPlayer();
-        if(!p.isSneaking()){ //TESTING
+        if(!p.isSneaking()){ //debug end game
 
-            //spawnWave("BLUE",blue,red);
-            //spawnWave("RED",red,blue);
             match.endMatch("BLUE");
         }
     }
