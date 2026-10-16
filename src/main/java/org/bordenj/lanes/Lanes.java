@@ -12,21 +12,17 @@ import java.util.Objects;
 public final class Lanes extends JavaPlugin {
 
     private Events events;
+    private Match match;
 
     @Override
     public void onEnable() {
         // Plugin startup logic
         events = new Events(this);
+        match = new Match(this,events);
+        events.setMatch(match);
         getServer().getPluginManager().registerEvents(events, this);
-
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                events.DEBUGtowers();
-                events.DEBUGguardians();
-
-            }
-        }.runTaskLater(this,20);
+        getServer().getPluginManager().registerEvents(match, this);
+        match.init();
 
         for(Player p : Bukkit.getOnlinePlayers()){
             Objects.requireNonNull(p.getAttribute(Attribute.KNOCKBACK_RESISTANCE)).setBaseValue(1.0);
@@ -36,6 +32,6 @@ public final class Lanes extends JavaPlugin {
     @Override
     public void onDisable() {
         // Plugin shutdown logic
-        events.cleanup();
+        events.stopMatch();
     }
 }

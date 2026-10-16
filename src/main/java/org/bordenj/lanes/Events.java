@@ -22,6 +22,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 import org.bukkit.util.Transformation;
 import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
@@ -34,13 +35,20 @@ import static org.bukkit.Bukkit.createBlockData;
 
 public class Events implements Listener {
 
+    private Match match;
+    public void setMatch(Match match) {
+        this.match = match;
+    }
+
+    private BukkitTask waveTask;
+    private static final long WaveInterval = 20L *20;
+
     HashMap<LivingEntity, String> creeps = new HashMap<>();
     HashMap<LivingEntity, LivingEntity> targets = new HashMap<>();
 
     Set<LivingEntity> towers = new HashSet<>();
     Set<LivingEntity> banners = new HashSet<>();
     Set<LivingEntity> guardians = new HashSet<>();
-    Map<UUID, String> playerSides = new HashMap<>();
     Map<UUID, Integer> aggressorUntil = new HashMap<>();
     Map<Mob, Player> forcedTargets = new HashMap<>();      // minions told to chase an aggressor
     List<TextDisplay> towerDisplays = new ArrayList<>();
@@ -60,6 +68,9 @@ public class Events implements Listener {
     Location blueGuardianBase = new Location(Bukkit.getWorld("world"),-68.5,-60,-12.5);
     Location redGuardianBase = new Location(Bukkit.getWorld("world"),69.5,-60,-12.5);
 
+    Map<Mob, Location> anchors = new HashMap<>();
+    Map<Mob, Location> returning = new HashMap<>();
+    Map<Mob, Integer> playerIgnoreUntil = new HashMap<>();
 
     private static final double PlayerTargetPenalty = 150.0;
     private static final double AggressorBonus = 300.0;
@@ -106,18 +117,68 @@ public class Events implements Listener {
 
     private static final double GuardianHealth = 300.0;
 
+    private static final double TetherRange = 10.0;
+    private static final int PlayerIgnoreTicks = 5 * 20;
+    private static final double ReturnArrive = 2.0;
+
     private final Lanes plugin;
     public Events(Lanes plugin){
         this.plugin=plugin;
     }
 
-    //testing everyone bluey
+    public void startMatch(){
+        DEBUGtowers();
+        DEBUGguardians();
+        waveTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                spawnWave("BLUE", blue, red);
+                spawnWave("RED", red, blue);
+            }
+        }.runTaskTimer(plugin, 20L * 5, WaveInterval);  //delay wave1 and waves every 20sec after
+    }
+
+    public void stopWaves(){
+        if(waveTask != null){
+            waveTask.cancel();
+            waveTask = null;
+        }
+    }
+
+    public void stopMatch(){
+        stopWaves();
+        cleanup();
+    }
+
     private String sideOf(Player p){
-        return playerSides.computeIfAbsent(p.getUniqueId(), k -> "BLUE");
+        return match.getSide(p);
+    }
+
+    private void aggroStart(Mob m){
+        Location r = returning.get(m);
+        anchors.putIfAbsent(m, r != null ? r : m.getLocation());   // if still returning, the lane point stays the anchor
+    }
+
+    private void aggroStop(Mob m){
+        Location a = anchors.remove(m);
+        if(a != null && a.getWorld() == m.getWorld()
+                && a.distanceSquared(m.getLocation()) > ReturnArrive * ReturnArrive){
+            returning.put(m, a);                                   // ended away from the lane: go back
+        }
+    }
+
+    private boolean tetherBroken(Mob m){
+        Location a = anchors.get(m);
+        if(a == null || a.getWorld() != m.getWorld()) return false;
+        if(a.distanceSquared(m.getLocation()) <= TetherRange * TetherRange) return false;
+
+        forcedTargets.remove(m);                                   // stop the "chase the aggressor" order
+        playerIgnoreUntil.put(m, Bukkit.getCurrentTick() + PlayerIgnoreTicks);
+        return true;
     }
 
     private boolean targetablePlayer(Player p){
-        return p.isOnline() && p.isValid()
+        return match.isPlaying(p) && p.isOnline() && p.isValid()
                 && (p.getGameMode() == GameMode.SURVIVAL || p.getGameMode() == GameMode.ADVENTURE);
     }
 
@@ -128,6 +189,10 @@ public class Events implements Listener {
     private Player getForced(Mob minion){
         Player p = forcedTargets.get(minion);
         if(p == null) return null;
+        if(Bukkit.getCurrentTick() < playerIgnoreUntil.getOrDefault(minion, 0)){
+            forcedTargets.remove(minion);
+            return null;
+        }
         if(!targetablePlayer(p) || !isAggressor(p)){
             forcedTargets.remove(minion);
             return null;
@@ -171,7 +236,6 @@ public class Events implements Listener {
         banners.clear();
         types.clear();
         guardians.clear();
-        playerSides.clear();
         aggressorUntil.clear();
         forcedTargets.clear();
 
@@ -194,10 +258,10 @@ public class Events implements Listener {
         }
     }
 
-    private void giveGold(Location loc, Player p,int amount){
+    private void giveMoney(Location loc, Player p,int amount){
         ItemDisplay ingot = loc.getWorld().spawn(loc.clone().add(0, 1, 0), ItemDisplay.class,d->{
             d.setPersistent(false);
-            d.setItemStack(new ItemStack(Material.GOLD_INGOT));
+            d.setItemStack(new ItemStack(Material.EMERALD));
             d.setBillboard(Display.Billboard.CENTER);
             d.setTeleportDuration(1);
             d.setTransformation(new Transformation(
@@ -221,7 +285,7 @@ public class Events implements Listener {
                 age++;
             }
         }.runTaskTimer(plugin,0,1);
-        //GIVE PLAYER GOLD ON BOARD LATER
+        match.addMoney(p,amount);
     }
 
     private void drawBeam(Location from, LivingEntity target, double radius, Color color){
@@ -470,6 +534,7 @@ public class Events implements Listener {
         double bestScore = Double.MAX_VALUE;
 
         for(LivingEntity candidate : creeps.keySet()){
+
             if(!Objects.equals(creeps.get(candidate), side)&&candidate.isValid()){
                 double d = candidate.getLocation().distanceSquared(minion.getLocation());
                 if(d>range*range){
@@ -486,9 +551,10 @@ public class Events implements Listener {
                 }
             }
         }
+        boolean ignorePlayers = Bukkit.getCurrentTick() < playerIgnoreUntil.getOrDefault(minion, 0);
 
         for(Player p : Bukkit.getOnlinePlayers()){
-            if(sideOf(p).equals(side) || !targetablePlayer(p) || p.getWorld() != minion.getWorld()) continue;
+            if(ignorePlayers || sideOf(p).equals(side) || !targetablePlayer(p) || p.getWorld() != minion.getWorld()) continue;
             double d = p.getLocation().distanceSquared(minion.getLocation());
             if(d > range * range) continue;
             double score = Math.sqrt(d)
@@ -844,14 +910,17 @@ public class Events implements Listener {
             @Override
             public void run() {
                 if(!core.isValid()){
+                    boolean killed = core.getHealth() <= 0;
                     label.remove();
                     towerDisplays.remove(label);
                     creeps.remove(core);
                     towers.remove(core);
                     types.remove(core);
                     core.remove();
-                    Bukkit.getWorld("world").spawnParticle(Particle.EXPLOSION_EMITTER,core.getLocation(),2,0,0,0,0);
-                    Bukkit.broadcast(Component.text(side + " tower destroyed"));
+                    if(killed){
+                        Bukkit.getWorld("world").spawnParticle(Particle.EXPLOSION_EMITTER,core.getLocation(),2,0,0,0,0);
+                        Bukkit.broadcast(Component.text(side + " tower destroyed"));
+                    }
                     cancel();
                     return;
                 }
@@ -932,10 +1001,12 @@ public class Events implements Listener {
                     creeps.remove(core);
                     guardians.remove(core);
                     types.remove(core);
+                    core.remove();
                     if(killed){
                         core.getWorld().spawnParticle(Particle.EXPLOSION_EMITTER, core.getLocation(), 2, 0, 0, 0, 0);
                         String winner = side.equals("BLUE") ? "RED" : "BLUE";
                         Bukkit.broadcast(Component.text(side + " guardian destroyed - " + winner + " wins!"));
+                        match.endMatch(winner);
                     }
                     cancel();
                     return;
@@ -956,9 +1027,9 @@ public class Events implements Listener {
         Player p = e.getPlayer();
         if(!p.isSneaking()){ //TESTING
 
-            spawnWave("BLUE",blue,red);
-            spawnWave("RED",red,blue);
-
+            //spawnWave("BLUE",blue,red);
+            //spawnWave("RED",red,blue);
+            match.endMatch("BLUE");
         }
     }
 
@@ -975,13 +1046,13 @@ public class Events implements Listener {
                 p.sendMessage(Component.text("You killed "+type.toString()));
                 //give gold
                 if(type.equals(MinionTypes.TOWER)){
-                    giveGold(dead.getLocation(),p,50);
+                    giveMoney(dead.getLocation(),p,400);
                 } else if (type.equals(MinionTypes.RANGED)) {
-                    giveGold(dead.getLocation(),p,2);
+                    giveMoney(dead.getLocation(),p,10);
                 }else if (type.equals(MinionTypes.MELEE)) {
-                    giveGold(dead.getLocation(),p,3);
+                    giveMoney(dead.getLocation(),p,15);
                 }else if (type.equals(MinionTypes.BANNER)) {
-                    giveGold(dead.getLocation(),p,5);
+                    giveMoney(dead.getLocation(),p,25);
                 }
             }
 
@@ -1042,13 +1113,6 @@ public class Events implements Listener {
         e.setCancelled(true);
     }
 
-    @EventHandler
-    public void onDeath(EntityDeathEvent e) {
-        if (creeps.containsKey(e.getEntity())) {
-            e.getDrops().clear();
-            e.setDroppedExp(0);
-        }
-    }
 
     @EventHandler
     public void antiSnowAct(EntityBlockFormEvent e){
