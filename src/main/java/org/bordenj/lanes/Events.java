@@ -14,10 +14,7 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.BlockSpreadEvent;
 import org.bukkit.event.block.EntityBlockFormEvent;
-import org.bukkit.event.entity.EntityDamageByEntityEvent;
-import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.entity.EntityDeathEvent;
-import org.bukkit.event.entity.EntitySpawnEvent;
+import org.bukkit.event.entity.*;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.ItemStack;
@@ -91,7 +88,7 @@ public class Events implements Listener {
     private static final double BeamMaxRadius = 0.20;
 
 
-    private static final double CrowdScore = 7;
+    private static final double CrowdScore = 5;
 
     private static final double MeleeAggroRange = 5.0;
     private static final double MeleeAttackRange = 2.0;
@@ -107,6 +104,7 @@ public class Events implements Listener {
     private static final int BannerHealCooldown = 8*20; //ticks
     private static final double BannerAttackRange = 5.0;
 
+    private static final double MinionSpeed = 0.25;
 
     private static final double LaneSpacing = 1.0;
 
@@ -126,9 +124,22 @@ public class Events implements Listener {
         this.plugin=plugin;
     }
 
+    private void holdLaneChunks(){
+        World w = blue.getWorld();
+        int minX = Math.min(blue.getBlockX(), red.getBlockX()) >> 4;
+        int maxX = Math.max(blue.getBlockX(), red.getBlockX()) >> 4;
+        int z = blue.getBlockZ() >> 4;
+        for(int cx = minX; cx <= maxX; cx++){
+            for(int cz = z - 1; cz <= z + 1; cz++){
+                w.addPluginChunkTicket(cx, cz, plugin);
+            }
+        }
+    }
+
     public void startMatch(){
         SpawnTowers();
         SpawnGuardians();
+        holdLaneChunks();
         waveTask = new BukkitRunnable() {
             @Override
             public void run() {
@@ -148,6 +159,7 @@ public class Events implements Listener {
     public void stopMatch(){
         stopWaves();
         cleanup();
+        blue.getWorld().removePluginChunkTickets(plugin);
     }
 
     private String sideOf(Player p){
@@ -326,6 +338,9 @@ public class Events implements Listener {
         World world = shooter.getWorld();
         Location pos = shooter.getEyeLocation();
 
+        boolean isBlue = "BLUE".equals(creeps.get(shooter));
+        Particle proj = isBlue ? Particle.CRIT : Particle.ENCHANTED_HIT;
+
         new BukkitRunnable() {
             @Override
             public void run() {
@@ -348,14 +363,15 @@ public class Events implements Listener {
                 if(dist <= MissileSpeed){
                     Location hit = target.getBoundingBox().getCenter().toLocation(world);
                     target.damage(MissileDamage, shooter);
-                    world.spawnParticle(Particle.ENCHANTED_HIT, hit, 5,0,0,0,1);
+                    world.spawnParticle(proj, hit, 5,0,0,0,1);
                     //world.spawnParticle(Particle.CRIT, hit, 15, 0.3, 0.3, 0.3, 0.2);
                     cancel();
                     return;
                 }
 
                 pos.add(toTarget.normalize().multiply(MissileSpeed));
-                world.spawnParticle(Particle.ENCHANTED_HIT, pos, 4, 0.01, 0.01, 0.01, 0);
+                world.spawnParticle(proj, pos, 4, 0.01, 0.01, 0.01, 0);
+
             }
         }.runTaskTimer(plugin, 0, 1);
     }
@@ -443,6 +459,7 @@ public class Events implements Listener {
     }
 
     private void minionManager(Mob mob, String side, Location goal, Goal<Mob> attackGoal){
+        mob.setRemoveWhenFarAway(false);
         creeps.put(mob, side);
         attachHealthBar(mob, side);
         MobGoals goals = Bukkit.getMobGoals();
@@ -455,7 +472,7 @@ public class Events implements Listener {
         new BukkitRunnable() {
             @Override
             public void run() {
-                if(!mob.isValid()|| mob.getLocation().distanceSquared(goal)<3){
+                if(mob.isDead() || mob.getLocation().distanceSquared(goal) < 3){
                     for(Entity passenger : mob.getPassengers()){
                         passenger.remove();
                     }
@@ -520,7 +537,7 @@ public class Events implements Listener {
 
             @Override
             public void run() {
-                if(!mob.isValid() || !bar.isValid()){
+                if(mob.isDead() || bar.isDead()){
                     bar.remove();
                     cancel();
                     return;
@@ -671,7 +688,11 @@ public class Events implements Listener {
                 minion.getPathfinder().stopPathfinding();
                 if(Bukkit.getCurrentTick() >= nextAttackTick){
                     target.damage(MeleeDamage, minion);
-                    minion.playEffect(EntityEffect.ENTITY_ATTACK);
+                    if(minion instanceof IronGolem){
+                        minion.playEffect(EntityEffect.ENTITY_ATTACK);
+                    }else{
+                        minion.swingMainHand();
+                    }
                     nextAttackTick = Bukkit.getCurrentTick() + MeleeCooldown;
                 }
             }
@@ -831,65 +852,145 @@ public class Events implements Listener {
         }
     }
 
-    private void spawnMeleeMinion(String side, Location start, Location goal){
+    private void spawnRedMeleeMinion(String side, Location start, Location goal){
         IronGolem golem = start.getWorld().spawn(start,IronGolem.class, h -> h.setPersistent(false));
         Objects.requireNonNull(golem.getAttribute(Attribute.SCALE)).setBaseValue(0.3);
-        Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(24);
-        golem.setHealth(24);
+        Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(20);
+        Objects.requireNonNull(golem.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed+0.0018);
+        golem.setHealth(20);
         golem.setCollidable(true);
 
         types.put(golem,MinionTypes.MELEE);
 
         minionManager(golem,side,goal,new MeleeAttackGoal(golem));
     }
-    private void spawnRangedMinion(String side, Location start, Location goal){
+    private void spawnRedRangedMinion(String side, Location start, Location goal){
         IronGolem golem = start.getWorld().spawn(start,IronGolem.class, h -> h.setPersistent(false));
         Objects.requireNonNull(golem.getAttribute(Attribute.SCALE)).setBaseValue(0.3);
-        Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(14);
-        golem.setHealth(14);
+        Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(10);
+        Objects.requireNonNull(golem.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed+0.0018);
+
+        golem.setHealth(10);
         golem.setCollidable(true);
 
         types.put(golem,MinionTypes.RANGED);
 
         minionManager(golem,side,goal,new RangedAttackGoal(golem));
     }
-    private void spawnBannerMinion(String side, Location start, Location goal){
+    private void spawnRedBannerMinion(String side, Location start, Location goal){
         IronGolem golem = start.getWorld().spawn(start,IronGolem.class, h -> h.setPersistent(false));
 
         banners.add(golem);
 
         Objects.requireNonNull(golem.getAttribute(Attribute.SCALE)).setBaseValue(0.5);
         Objects.requireNonNull(golem.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(30);
+        Objects.requireNonNull(golem.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed+0.0018);
+
         golem.setHealth(30);
         golem.setCollidable(true);
+        golem.setSilent(true);
+
 
         types.put(golem,MinionTypes.BANNER);
 
         minionManager(golem,side,goal,new MeleeAttackGoal(golem));
         //doBannerHeal(golem,side);
     }
+
+    private void spawnBlueMeleeMinion(String side, Location start, Location goal){
+        WitherSkeleton ghoul = start.getWorld().spawn(start,WitherSkeleton.class, h -> h.setPersistent(false));
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.SCALE)).setBaseValue(0.3);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(20);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed);
+
+        ghoul.setHealth(20);
+        ghoul.setCollidable(true);
+
+        types.put(ghoul,MinionTypes.MELEE);
+
+        minionManager(ghoul,side,goal,new MeleeAttackGoal(ghoul));
+    }
+    private void spawnBlueRangedMinion(String side, Location start, Location goal){
+        Skeleton ghoul = start.getWorld().spawn(start,Skeleton.class, h -> h.setPersistent(false));
+        ghoul.setShouldBurnInDay(false);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.SCALE)).setBaseValue(0.3);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(10);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed);
+
+        ghoul.setHealth(10);
+        ghoul.setCollidable(true);
+
+
+        types.put(ghoul,MinionTypes.RANGED);
+
+        minionManager(ghoul,side,goal,new RangedAttackGoal(ghoul));
+    }
+    private void spawnBlueBannerMinion(String side, Location start, Location goal){
+        Zombie ghoul = start.getWorld().spawn(start,Zombie.class, h -> h.setPersistent(false));
+
+        banners.add(ghoul);
+
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.SCALE)).setBaseValue(0.6);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MAX_HEALTH)).setBaseValue(30);
+        Objects.requireNonNull(ghoul.getAttribute(Attribute.MOVEMENT_SPEED)).setBaseValue(MinionSpeed);
+
+        ghoul.setHealth(30);
+        ghoul.setSilent(true);
+        ghoul.setCollidable(true);
+        ghoul.setShouldBurnInDay(false);
+        ghoul.setBaby(false);
+
+        types.put(ghoul,MinionTypes.BANNER);
+
+        minionManager(ghoul,side,goal,new MeleeAttackGoal(ghoul));
+        //doBannerHeal(golem,side);
+    }
+
     private void spawnWave(String side, Location start, Location goal){
         Location offset = new Location(start.getWorld(), 0, 0, 1 * LaneSpacing);
         Location offset2 = new Location(start.getWorld(), 0, 0, -1 * LaneSpacing);
+        if(side.equals("BLUE")){
 
-        spawnMeleeMinion(side, start.clone().add(offset), goal.clone().add(offset));
-        spawnMeleeMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
+            spawnBlueMeleeMinion(side, start.clone().add(offset), goal.clone().add(offset));
+            spawnBlueMeleeMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
 
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                spawnBannerMinion(side, start,goal);
-            }
-        }.runTaskLater(plugin,10);
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    spawnBlueBannerMinion(side, start,goal);
+                }
+            }.runTaskLater(plugin,10);
 
-        new BukkitRunnable() {
-            @Override
-            public void run() {
-                spawnRangedMinion(side, start.clone().add(offset), goal.clone().add(offset));
-                spawnRangedMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
-            }
-        }.runTaskLater(plugin,20);
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    spawnBlueRangedMinion(side, start.clone().add(offset), goal.clone().add(offset));
+                    spawnBlueRangedMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
+                }
+            }.runTaskLater(plugin,20);
+        }else{
+
+            spawnRedMeleeMinion(side, start.clone().add(offset), goal.clone().add(offset));
+            spawnRedMeleeMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
+
+
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    spawnRedBannerMinion(side, start,goal);
+                }
+            }.runTaskLater(plugin,10);
+
+            new BukkitRunnable() {
+                @Override
+                public void run() {
+                    spawnRedRangedMinion(side, start.clone().add(offset), goal.clone().add(offset));
+                    spawnRedRangedMinion(side, start.clone().add(offset2), goal.clone().add(offset2));
+                }
+            }.runTaskLater(plugin,20);
+        }
+
 
     }
     private void spawnTower(String side, Location base, Location beam){
@@ -1148,6 +1249,20 @@ public class Events implements Listener {
     @EventHandler
     public void onJoin(PlayerJoinEvent e){
         Objects.requireNonNull(e.getPlayer().getAttribute(Attribute.KNOCKBACK_RESISTANCE)).setBaseValue(1.0);
+    }
+
+    @EventHandler
+    public void antiBurnAct(EntityCombustEvent e){
+        if(creeps.containsKey(e.getEntity())){
+            e.setCancelled(true);
+        }
+    }
+
+    @EventHandler
+    public void CHICKENJOCKEY(CreatureSpawnEvent e){
+        if(e.getSpawnReason() == CreatureSpawnEvent.SpawnReason.JOCKEY){
+            e.setCancelled(true);
+        }
     }
 
 }

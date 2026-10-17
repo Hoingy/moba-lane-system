@@ -26,6 +26,7 @@ public final class Lanes extends JavaPlugin {
 
         for(Player p : Bukkit.getOnlinePlayers()){
             Objects.requireNonNull(p.getAttribute(Attribute.KNOCKBACK_RESISTANCE)).setBaseValue(1.0);
+            Objects.requireNonNull(p.getAttribute(Attribute.WATER_MOVEMENT_EFFICIENCY)).setBaseValue(1.0);
         }
     }
 

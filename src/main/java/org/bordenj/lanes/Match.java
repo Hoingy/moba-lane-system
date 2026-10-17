@@ -566,12 +566,12 @@ public class Match implements Listener{
             pickHero(p, champions.get(slot));
             return;
         }
-        if (phase != Phase.IN_GAME) e.setCancelled(true);
+        //if (phase != Phase.IN_GAME) e.setCancelled(true);
     }
 
     @EventHandler
     public void onDrop(PlayerDropItemEvent e) {
-        if (phase != Phase.IN_GAME) e.setCancelled(true); //change later to detect abilities
+        //if (phase != Phase.IN_GAME) e.setCancelled(true); //change later to detect abilities
     }
 
     @EventHandler
